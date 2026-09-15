@@ -1,0 +1,6 @@
+{
+  "name": "PromptForge - AI Prompt Engineering Studio",
+  "description": "استوديو برومبت فورج - تحويل الأفكار العادية إلى برومبتات استثنائية ونماذج دقيقة لكافة نماذج الذكاء الاصطناعي ومحررات الكود",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
