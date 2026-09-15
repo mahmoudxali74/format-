@@ -2,12 +2,13 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   DomainType,
   DepthType,
+  OutputLanguage,
   GeminiModelInfo,
   SavedPromptItem,
   GenerationErrorDetails,
 } from './types';
 import { safeStorage } from './utils/storage';
-import { EXACT_SYSTEM_INSTRUCTION } from './constants';
+import { EXACT_SYSTEM_INSTRUCTION, DEPTHS, OUTPUT_LANGUAGES } from './constants';
 import {
   fetchGeminiModels,
   generateStructuredPrompt,
@@ -21,14 +22,16 @@ import { OutputPanel } from './components/OutputPanel';
 import { Footer } from './components/Footer';
 import { LibraryDrawer } from './components/LibraryDrawer';
 import { ErrorBanner } from './components/ErrorBanner';
+import { SettingsModal } from './components/SettingsModal';
 import { Clock } from 'lucide-react';
 
 const STORAGE_KEYS = {
-  API_KEY: 'gemini_user_api_key',
   MODELS: 'gemini_available_models',
   SELECTED_MODEL: 'gemini_active_model',
   SYSTEM_INSTRUCTION: 'gemini_system_instruction',
   SAVED_PROMPTS: 'gemini_structured_prompts_library',
+  DEPTH: 'prompt_depth_preference',
+  OUTPUT_LANGUAGE: 'prompt_output_language_preference',
   THEME: 'theme_preference',
   LANG: 'app_language_preference',
 };
@@ -79,32 +82,35 @@ export default function App() {
     builderRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  // State for API Key (empty string delegates to backend process.env.GEMINI_API_KEY)
-  const [apiKey] = useState<string>(() => {
-    return safeStorage.getItem(STORAGE_KEYS.API_KEY) || '';
-  });
-
-  // Editable System Instruction
-  const [systemInstruction] = useState<string>(() => {
+  // Editable System Instruction (viewed and saved from the Settings panel)
+  const [systemInstruction, setSystemInstruction] = useState<string>(() => {
     return safeStorage.getItem(STORAGE_KEYS.SYSTEM_INSTRUCTION) || EXACT_SYSTEM_INSTRUCTION;
   });
 
-  // Models fetched dynamically via the backend
+  const handleSaveSystemInstruction = (instruction: string) => {
+    setSystemInstruction(instruction);
+    safeStorage.setItem(STORAGE_KEYS.SYSTEM_INSTRUCTION, instruction);
+  };
+
+  // Models fetched dynamically via the backend. No model name is hardcoded.
   const [models, setModels] = useState<GeminiModelInfo[]>(() => {
     return safeStorage.getJSON<GeminiModelInfo[]>(STORAGE_KEYS.MODELS, []);
   });
 
   const [selectedModel, setSelectedModel] = useState<string>(() => {
-    const saved = safeStorage.getItem(STORAGE_KEYS.SELECTED_MODEL);
-    if (!saved || saved.includes('2.5-flash')) {
-      return 'gemini-3.6-flash';
-    }
-    return saved;
+    return safeStorage.getItem(STORAGE_KEYS.SELECTED_MODEL) || '';
   });
 
   // Prompt configuration state
   const [domain, setDomain] = useState<DomainType>('general');
-  const [depth, setDepth] = useState<DepthType>('medium');
+  const [depth, setDepth] = useState<DepthType>(() => {
+    const saved = safeStorage.getItem(STORAGE_KEYS.DEPTH);
+    return DEPTHS.some((d) => d.id === saved) ? (saved as DepthType) : 'medium';
+  });
+  const [outputLanguage, setOutputLanguage] = useState<OutputLanguage>(() => {
+    const saved = safeStorage.getItem(STORAGE_KEYS.OUTPUT_LANGUAGE);
+    return OUTPUT_LANGUAGES.some((l) => l.id === saved) ? (saved as OutputLanguage) : 'match';
+  });
   const [rawText, setRawText] = useState<string>('');
   const [previousRawText, setPreviousRawText] = useState<string | null>(null);
   const [exclusions, setExclusions] = useState<string>('');
@@ -115,94 +121,100 @@ export default function App() {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isEnhancing, setIsEnhancing] = useState<boolean>(false);
   const [isLoadingModels, setIsLoadingModels] = useState<boolean>(false);
-  const [modelsError, setModelsError] = useState<GenerationErrorDetails | string | null>(null);
   const [generationError, setGenerationError] = useState<GenerationErrorDetails | null>(null);
   const [retryNotice, setRetryNotice] = useState<string | null>(null);
 
   // Modals & Drawers state
   const [isLibraryOpen, setIsLibraryOpen] = useState<boolean>(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
 
   // Saved library state
   const [savedItems, setSavedItems] = useState<SavedPromptItem[]>(() => {
     return safeStorage.getJSON<SavedPromptItem[]>(STORAGE_KEYS.SAVED_PROMPTS, []);
   });
 
-  // Fetch available models
-  const handleFetchModels = useCallback(async (keyToUse: string) => {
-    setIsLoadingModels(true);
-    setModelsError(null);
-    try {
-      const fetchedModels = await fetchGeminiModels(keyToUse);
-      setModels(fetchedModels);
-      safeStorage.setJSON(STORAGE_KEYS.MODELS, fetchedModels);
+  const handleChangeDepth = (value: DepthType) => {
+    setDepth(value);
+    safeStorage.setItem(STORAGE_KEYS.DEPTH, value);
+  };
 
-      // Verify active selection
-      const exists = fetchedModels.some((m) => m.id === selectedModel);
-      if (!exists && fetchedModels.length > 0) {
-        const preferred =
-          fetchedModels.find((m) => m.id === 'gemini-3.6-flash') ||
-          fetchedModels.find((m) => m.id.includes('flash')) ||
-          fetchedModels[0];
-        setSelectedModel(preferred.id);
-        safeStorage.setItem(STORAGE_KEYS.SELECTED_MODEL, preferred.id);
-      }
-    } catch (err: any) {
-      if (err?.details) {
-        setModelsError(err.details);
-      } else {
-        setModelsError(err?.message || 'Failed to fetch models');
-      }
-    } finally {
-      setIsLoadingModels(false);
-    }
-  }, [selectedModel]);
+  const handleChangeOutputLanguage = (value: OutputLanguage) => {
+    setOutputLanguage(value);
+    safeStorage.setItem(STORAGE_KEYS.OUTPUT_LANGUAGE, value);
+  };
 
   const handleSelectModel = (modelId: string) => {
     setSelectedModel(modelId);
     safeStorage.setItem(STORAGE_KEYS.SELECTED_MODEL, modelId);
   };
 
-  // Initial load: Fetch models
-  useEffect(() => {
-    handleFetchModels(apiKey);
+  const toErrorDetails = (err: any, fallbackMessage: string): GenerationErrorDetails => {
+    return err?.details || { statusCode: 0, rawMessage: err?.message || fallbackMessage };
+  };
+
+  // Fetch models available to the server key. Errors show in the banner.
+  const handleFetchModels = useCallback(async () => {
+    setIsLoadingModels(true);
+    try {
+      const fetchedModels = await fetchGeminiModels();
+      setModels(fetchedModels);
+      safeStorage.setJSON(STORAGE_KEYS.MODELS, fetchedModels);
+
+      setSelectedModel((current) => {
+        if (fetchedModels.some((m) => m.id === current)) return current;
+        // The free tier is Flash-only, so prefer a Flash model when the saved one is gone.
+        const preferred = fetchedModels.find((m) => m.id.includes('flash')) || fetchedModels[0];
+        safeStorage.setItem(STORAGE_KEYS.SELECTED_MODEL, preferred.id);
+        return preferred.id;
+      });
+    } catch (err: any) {
+      setGenerationError(toErrorDetails(err, 'Failed to fetch models'));
+    } finally {
+      setIsLoadingModels(false);
+    }
   }, []);
 
-  // Enhance prompt text phrasing using Gemini before final structuring
+  // Initial load: Fetch models
+  useEffect(() => {
+    handleFetchModels();
+  }, [handleFetchModels]);
+
+  /** The model to send, or null (with an error shown) when none is available. */
+  const resolveModel = (): string | null => {
+    const model = selectedModel.trim() || models[0]?.id || '';
+    if (!model) {
+      setGenerationError({
+        statusCode: 400,
+        rawMessage:
+          lang === 'ar'
+            ? 'لم يتم اختيار نموذج. اضغط "تحديث" بجانب قائمة النماذج ثم اختر نموذجًا.'
+            : 'No model selected. Press Refresh next to the model list, then pick a model.',
+      });
+      return null;
+    }
+    if (model !== selectedModel) {
+      handleSelectModel(model);
+    }
+    return model;
+  };
+
+  // Clarify the wording of the raw text before final structuring
   const handleEnhancePrompt = async () => {
     if (!rawText.trim() || isEnhancing) return;
 
-    setIsEnhancing(true);
     setGenerationError(null);
+    const model = resolveModel();
+    if (!model) return;
 
-    let targetModel = selectedModel.trim();
-    if (!targetModel && models.length > 0) {
-      targetModel = models[0].id;
-    }
-    if (!targetModel) {
-      targetModel = 'gemini-3.6-flash';
-    }
-
+    setIsEnhancing(true);
     try {
-      const refined = await refinePromptText({
-        rawText,
-        domain,
-        model: targetModel,
-        apiKey,
-      });
-
+      const refined = await refinePromptText({ rawText, model });
       setPreviousRawText(rawText);
       setRawText(refined);
     } catch (err: any) {
-      if (err?.details) {
-        setGenerationError(err.details);
-      } else {
-        setGenerationError({
-          statusCode: 500,
-          rawMessage:
-            err?.message ||
-            (lang === 'ar' ? 'فشل تحسين صياغة البرومبت.' : 'Failed to refine prompt.'),
-        });
-      }
+      setGenerationError(
+        toErrorDetails(err, lang === 'ar' ? 'فشل تحسين صياغة البرومبت.' : 'Failed to refine prompt.')
+      );
     } finally {
       setIsEnhancing(false);
     }
@@ -213,6 +225,16 @@ export default function App() {
       setRawText(previousRawText);
       setPreviousRawText(null);
     }
+  };
+
+  const saveToLibrary = (item: Omit<SavedPromptItem, 'id'>) => {
+    const newItem: SavedPromptItem = {
+      ...item,
+      id: `prompt_${item.timestamp}_${Math.random().toString(36).slice(2, 7)}`,
+    };
+    const updatedLibrary = [newItem, ...savedItems.filter((i) => i.output !== item.output)].slice(0, 100);
+    setSavedItems(updatedLibrary);
+    safeStorage.setJSON(STORAGE_KEYS.SAVED_PROMPTS, updatedLibrary);
   };
 
   // Main Submit Handler
@@ -228,38 +250,26 @@ export default function App() {
       return;
     }
 
-    let targetModel = selectedModel.trim();
-    if (!targetModel && models.length > 0) {
-      targetModel = models[0].id;
-      handleSelectModel(targetModel);
-    }
-    if (!targetModel) {
-      targetModel = 'gemini-3.6-flash';
-      handleSelectModel(targetModel);
-    }
-
-    setIsLoading(true);
     setGenerationError(null);
     setRetryNotice(null);
+    const model = resolveModel();
+    if (!model) return;
 
+    setIsLoading(true);
     try {
       const generatedPrompt = await generateStructuredPrompt({
-        apiKey,
-        model: targetModel,
+        model,
         rawText,
         exclusions,
         domain,
         depth,
+        outputLanguage,
         baseSystemInstruction: systemInstruction,
         onRetry: (attempt, delaySeconds, isPerMinute) => {
           setRetryNotice(
             lang === 'ar'
-              ? `تم الوصول إلى حد الطلبات ${
-                  isPerMinute ? 'للدقيقة (Per-Minute)' : 'اليومي (Daily Quota)'
-                }. جاري إعادة المحاولة تلقائياً بعد ${delaySeconds} ثوانٍ (محاولة ${attempt} من 3)...`
-              : `Rate limit hit (${
-                  isPerMinute ? 'per-minute' : 'daily quota'
-                }). Retrying with backoff in ${delaySeconds}s (attempt ${attempt} of 3)...`
+              ? `تم الوصول إلى ${isPerMinute ? 'حد الطلبات في الدقيقة' : 'حد الطلبات'}. إعادة المحاولة تلقائياً بعد ${delaySeconds} ثانية (محاولة ${attempt} من 3)...`
+              : `Rate limit hit${isPerMinute ? ' (per-minute)' : ''}. Retrying in ${delaySeconds}s (attempt ${attempt} of 3)...`
           );
         },
       });
@@ -267,36 +277,25 @@ export default function App() {
       const now = Date.now();
       setOutput(generatedPrompt);
       setCurrentResultTimestamp(now);
-      setRetryNotice(null);
 
       // Auto save to local library
-      const newItem: SavedPromptItem = {
-        id: `prompt_${now}_${Math.random().toString(36).slice(2, 7)}`,
+      saveToLibrary({
         rawInput: rawText.trim(),
         exclusions: exclusions.trim() || undefined,
         domain,
         depth,
-        model: targetModel,
+        outputLanguage,
+        model,
         output: generatedPrompt,
         timestamp: now,
-      };
-
-      const updatedLibrary = [newItem, ...savedItems.filter(i => i.output !== generatedPrompt)].slice(0, 100);
-      setSavedItems(updatedLibrary);
-      safeStorage.setJSON(STORAGE_KEYS.SAVED_PROMPTS, updatedLibrary);
+      });
     } catch (err: any) {
-      if (err?.details) {
-        setGenerationError(err.details);
-      } else {
-        setGenerationError({
-          statusCode: 0,
-          rawMessage:
-            err?.message ||
-            (lang === 'ar'
-              ? 'حدث خطأ أثناء الاتصال بالخادم.'
-              : 'An error occurred while connecting to the API.'),
-        });
-      }
+      setGenerationError(
+        toErrorDetails(
+          err,
+          lang === 'ar' ? 'حدث خطأ أثناء الاتصال بالخادم.' : 'An error occurred while connecting to the server.'
+        )
+      );
     } finally {
       setIsLoading(false);
       setRetryNotice(null);
@@ -306,25 +305,21 @@ export default function App() {
   // Manual save to library
   const handleManualSaveToLibrary = () => {
     if (!output.trim()) return;
-    const now = Date.now();
-    const newItem: SavedPromptItem = {
-      id: `prompt_${now}_${Math.random().toString(36).slice(2, 7)}`,
+    saveToLibrary({
       rawInput: rawText.trim() || 'Prompt Snippet',
       exclusions: exclusions.trim() || undefined,
       domain,
       depth,
+      outputLanguage,
       model: selectedModel,
       output: output.trim(),
-      timestamp: now,
-    };
-    const updatedLibrary = [newItem, ...savedItems.filter(i => i.output !== output.trim())].slice(0, 100);
-    setSavedItems(updatedLibrary);
-    safeStorage.setJSON(STORAGE_KEYS.SAVED_PROMPTS, updatedLibrary);
+      timestamp: Date.now(),
+    });
   };
 
   // Check if current output is saved in library
   const isCurrentOutputSaved = Boolean(
-    output.trim() && savedItems.some(i => i.output.trim() === output.trim())
+    output.trim() && savedItems.some((i) => i.output.trim() === output.trim())
   );
 
   // Clear Input
@@ -337,13 +332,12 @@ export default function App() {
   // Local Library Actions
   const handleReopenSavedItem = (item: SavedPromptItem) => {
     setRawText(item.rawInput);
-    if (item.exclusions) {
-      setExclusions(item.exclusions);
-    } else {
-      setExclusions('');
-    }
+    setExclusions(item.exclusions || '');
     setDomain(item.domain);
-    setDepth(item.depth);
+    handleChangeDepth(item.depth);
+    if (item.outputLanguage) {
+      handleChangeOutputLanguage(item.outputLanguage);
+    }
     setOutput(item.output);
     setCurrentResultTimestamp(item.timestamp);
     if (item.model) {
@@ -372,13 +366,14 @@ export default function App() {
     >
       {/* Top Header - PromptForge brand header with navigation & logo */}
       <Header
-        activeModel={selectedModel || 'gemini-3.6-flash'}
+        activeModel={selectedModel}
         savedCount={savedItems.length}
         theme={theme}
         onToggleTheme={toggleTheme}
         lang={lang}
         onToggleLang={toggleLang}
         onOpenLibrary={() => setIsLibraryOpen(true)}
+        onOpenSettings={() => setIsSettingsOpen(true)}
         onScrollToBuilder={scrollToBuilder}
       />
 
@@ -386,11 +381,12 @@ export default function App() {
       <HeroSection
         lang={lang}
         onScrollToBuilder={scrollToBuilder}
+        onOpenLibrary={() => setIsLibraryOpen(true)}
       >
         <main
           ref={builderRef}
           id="prompt-builder"
-          className="w-full text-left flex flex-col gap-6 relative z-20"
+          className="w-full text-left flex flex-col gap-6 relative z-20 scroll-mt-24"
           dir={lang === 'ar' ? 'rtl' : 'ltr'}
         >
           {/* Ambient Glow Emitters for Glassmorphism Refraction */}
@@ -414,9 +410,8 @@ export default function App() {
 
           {/* Translucent Glassmorphic Frame for the Prompt Workspace */}
           <div className="relative rounded-3xl p-4 sm:p-7 backdrop-blur-2xl bg-white/45 dark:bg-zinc-950/45 border border-white/60 dark:border-white/10 shadow-[0_28px_60px_-15px_rgba(124,58,237,0.18),0_10px_30px_-5px_rgba(0,0,0,0.06)] ring-1 ring-white/70 dark:ring-white/10 transition-all overflow-hidden before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-white/90 dark:before:via-white/20 before:to-transparent">
-            {/* Two-Column Cockpit Layout: Left: Input & Controls, Right: Output Console */}
+            {/* Two-Column Cockpit Layout: Input & Controls, Output Console */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 flex-1 items-stretch text-left" dir={lang === 'ar' ? 'rtl' : 'ltr'}>
-              {/* Left Column: Input with Enhance Prompt button */}
               <div className="flex flex-col">
                 <InputPanel
                   rawText={rawText}
@@ -426,12 +421,14 @@ export default function App() {
                   selectedDomain={domain}
                   onSelectDomain={setDomain}
                   depth={depth}
-                  onChangeDepth={setDepth}
+                  onChangeDepth={handleChangeDepth}
+                  outputLanguage={outputLanguage}
+                  onChangeOutputLanguage={handleChangeOutputLanguage}
                   selectedModel={selectedModel}
                   onChangeModel={handleSelectModel}
                   models={models}
                   isLoadingModels={isLoadingModels}
-                  onRefreshModels={() => handleFetchModels(apiKey)}
+                  onRefreshModels={handleFetchModels}
                   onSubmit={handleGenerate}
                   onClear={handleClear}
                   onEnhancePrompt={handleEnhancePrompt}
@@ -443,7 +440,7 @@ export default function App() {
                 />
               </div>
 
-              {/* Right Column: Output Console with Formatted / Raw / Blocks view modes */}
+              {/* Output Console with Formatted / Raw / Blocks view modes */}
               <div className="flex flex-col">
                 <OutputPanel
                   output={output}
@@ -475,6 +472,19 @@ export default function App() {
         onReopenItem={handleReopenSavedItem}
         onDeleteItem={handleDeleteSavedItem}
         onClearAll={handleClearAllSaved}
+        lang={lang}
+      />
+
+      {/* Settings: view and edit the system instruction that is sent */}
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        systemInstruction={systemInstruction}
+        onSaveSystemInstruction={handleSaveSystemInstruction}
+        domain={domain}
+        depth={depth}
+        outputLanguage={outputLanguage}
+        exclusions={exclusions}
         lang={lang}
       />
     </div>

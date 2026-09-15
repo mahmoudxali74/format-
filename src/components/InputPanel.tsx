@@ -1,5 +1,6 @@
 import React, { useRef, useEffect } from 'react';
-import { DomainType, DepthType, GeminiModelInfo } from '../types';
+import { DomainType, DepthType, GeminiModelInfo, OutputLanguage } from '../types';
+import { STARTER_EXAMPLES } from '../constants';
 import { DomainSelector } from './DomainSelector';
 import { ControlsBar } from './ControlsBar';
 import { AppLang, UI_STRINGS } from '../utils/i18n';
@@ -14,6 +15,8 @@ interface InputPanelProps {
   onSelectDomain: (domain: DomainType) => void;
   depth: DepthType;
   onChangeDepth: (depth: DepthType) => void;
+  outputLanguage: OutputLanguage;
+  onChangeOutputLanguage: (language: OutputLanguage) => void;
   selectedModel: string;
   onChangeModel: (model: string) => void;
   models: GeminiModelInfo[];
@@ -38,6 +41,8 @@ export const InputPanel: React.FC<InputPanelProps> = ({
   onSelectDomain,
   depth,
   onChangeDepth,
+  outputLanguage,
+  onChangeOutputLanguage,
   selectedModel,
   onChangeModel,
   models,
@@ -54,6 +59,7 @@ export const InputPanel: React.FC<InputPanelProps> = ({
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const t = UI_STRINGS[lang];
+  const isBusy = isLoading || isEnhancing;
 
   // Auto resize main textarea
   useEffect(() => {
@@ -67,10 +73,15 @@ export const InputPanel: React.FC<InputPanelProps> = ({
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
-      if (!isLoading && !isEnhancing && rawText.trim()) {
+      if (!isBusy && rawText.trim()) {
         onSubmit();
       }
     }
+  };
+
+  const handlePickExample = (example: string) => {
+    onChangeText(example);
+    textareaRef.current?.focus();
   };
 
   const charCount = rawText.length;
@@ -82,20 +93,22 @@ export const InputPanel: React.FC<InputPanelProps> = ({
       <DomainSelector
         selectedDomain={selectedDomain}
         onSelectDomain={onSelectDomain}
-        disabled={isLoading || isEnhancing}
+        disabled={isBusy}
         lang={lang}
       />
 
-      {/* 2. Controls Bar (Depth & Model) */}
+      {/* 2. Controls Bar (Depth, Model, Output language) */}
       <ControlsBar
         depth={depth}
         onChangeDepth={onChangeDepth}
+        outputLanguage={outputLanguage}
+        onChangeOutputLanguage={onChangeOutputLanguage}
         selectedModel={selectedModel}
         onChangeModel={onChangeModel}
         models={models}
         isLoadingModels={isLoadingModels}
         onRefreshModels={onRefreshModels}
-        disabled={isLoading || isEnhancing}
+        disabled={isBusy}
         lang={lang}
       />
 
@@ -104,14 +117,14 @@ export const InputPanel: React.FC<InputPanelProps> = ({
         {/* Header toolbar directly attached above/beside text area */}
         <div className="flex items-center justify-between gap-2 px-3.5 py-2.5 border-b border-white/60 dark:border-zinc-800/60 bg-white/50 dark:bg-zinc-950/40 backdrop-blur-md rounded-t-2xl">
           <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+            <label htmlFor="raw-prompt" className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
               {lang === 'ar' ? 'فكرة أو متطلبات البرومبت' : 'Raw Prompt / Idea'}
-            </span>
+            </label>
             {canUndoEnhance && onUndoEnhance && (
               <button
                 type="button"
                 onClick={onUndoEnhance}
-                disabled={isLoading || isEnhancing}
+                disabled={isBusy}
                 className="flex items-center gap-1 text-[11px] font-medium text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300 hover:underline cursor-pointer"
                 title={t.undoEnhance}
               >
@@ -125,7 +138,7 @@ export const InputPanel: React.FC<InputPanelProps> = ({
           <button
             type="button"
             onClick={onEnhancePrompt}
-            disabled={isLoading || isEnhancing || !rawText.trim()}
+            disabled={isBusy || !rawText.trim()}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white shadow-xs transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             title={t.enhancePromptTooltip}
           >
@@ -144,15 +157,57 @@ export const InputPanel: React.FC<InputPanelProps> = ({
         </div>
 
         <textarea
+          id="raw-prompt"
           ref={textareaRef}
           value={rawText}
           onChange={(e) => onChangeText(e.target.value)}
           onKeyDown={handleKeyDown}
-          disabled={isLoading || isEnhancing}
+          disabled={isBusy}
           placeholder={t.inputPlaceholder}
           className="w-full flex-1 p-4 bg-transparent text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 resize-none focus:outline-none min-h-[175px] leading-relaxed"
           dir="auto"
         />
+
+        {/* Starter examples: shown while the textarea is empty */}
+        {!rawText.trim() && (
+          <div className="px-4 pb-3 flex flex-wrap items-center gap-1.5" dir="rtl">
+            <span className="w-full text-[11px] font-medium text-zinc-500 dark:text-zinc-400">
+              {t.examplesLabel}
+            </span>
+            {STARTER_EXAMPLES.map((example) => (
+              <button
+                key={example}
+                type="button"
+                onClick={() => handlePickExample(example)}
+                disabled={isBusy}
+                className="px-2.5 py-1 rounded-full text-[11px] text-start text-zinc-700 dark:text-zinc-300 bg-white/70 dark:bg-zinc-800/60 border border-zinc-200/80 dark:border-zinc-700/60 hover:border-indigo-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {example}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Exclusions: appended as negative lines under # OUTPUT RULES */}
+        <div className="px-3.5 py-2.5 border-t border-white/60 dark:border-zinc-800/60">
+          <label
+            htmlFor="exclusions-input"
+            className="block text-[11px] font-semibold text-zinc-600 dark:text-zinc-400 mb-1"
+          >
+            {t.exclusionsLabel}
+          </label>
+          <textarea
+            id="exclusions-input"
+            value={exclusions}
+            onChange={(e) => onChangeExclusions(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={isBusy}
+            placeholder={t.exclusionsPlaceholder}
+            rows={2}
+            dir="auto"
+            className="w-full bg-transparent text-xs text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 resize-none focus:outline-none leading-relaxed"
+          />
+        </div>
 
         {/* Input Footer: Counts, Clear & Submit */}
         <div className="flex items-center justify-between gap-2 p-2.5 border-t border-white/60 dark:border-zinc-800/60 bg-white/50 dark:bg-zinc-950/40 backdrop-blur-md rounded-b-2xl text-xs">
@@ -167,7 +222,7 @@ export const InputPanel: React.FC<InputPanelProps> = ({
               <button
                 type="button"
                 onClick={onClear}
-                disabled={isLoading || isEnhancing}
+                disabled={isBusy}
                 className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-zinc-500 hover:text-rose-600 dark:text-zinc-400 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-colors cursor-pointer disabled:opacity-50"
                 title={t.clear}
               >
@@ -179,9 +234,9 @@ export const InputPanel: React.FC<InputPanelProps> = ({
             <button
               type="button"
               onClick={onSubmit}
-              disabled={isLoading || isEnhancing || !rawText.trim()}
+              disabled={isBusy || !rawText.trim()}
               className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Shortcut: Ctrl + Enter"
+              title="Shortcut: Ctrl/Cmd + Enter"
             >
               {isLoading ? (
                 <>

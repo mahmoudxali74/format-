@@ -1,5 +1,5 @@
 import React from 'react';
-import { History, Sun, Moon, Languages } from 'lucide-react';
+import { History, Sun, Moon, Languages, Settings } from 'lucide-react';
 import { Theme, AppLang, UI_STRINGS } from '../utils/i18n';
 
 interface HeaderProps {
@@ -10,9 +10,13 @@ interface HeaderProps {
   lang: AppLang;
   onToggleLang: () => void;
   onOpenLibrary: () => void;
+  onOpenSettings: () => void;
   onScrollToBuilder?: () => void;
   onBookCall?: () => void;
 }
+
+const iconButtonClassName =
+  'relative p-2 rounded-xl text-zinc-700 dark:text-zinc-300 hover:text-purple-600 dark:hover:text-purple-400 bg-white/60 dark:bg-zinc-900/60 backdrop-blur-md hover:bg-white/90 dark:hover:bg-zinc-800/80 border border-white/80 dark:border-white/10 shadow-2xs transition-all duration-150 cursor-pointer';
 
 export const Header: React.FC<HeaderProps> = ({
   savedCount = 0,
@@ -21,13 +25,14 @@ export const Header: React.FC<HeaderProps> = ({
   lang,
   onToggleLang,
   onOpenLibrary,
+  onOpenSettings,
   onScrollToBuilder,
 }) => {
   const t = UI_STRINGS[lang];
   const isAr = lang === 'ar';
 
   return (
-    <header className="sticky top-0 z-40 bg-transparent text-zinc-900 dark:text-white transition-colors duration-200">
+    <header className="sticky top-0 z-40 bg-[#FAFAFC]/85 dark:bg-[#070709]/85 backdrop-blur-md text-zinc-900 dark:text-white transition-colors duration-200">
       <div className="max-w-7xl mx-auto px-4 sm:px-8 py-3.5 flex items-center justify-between gap-4">
         {/* Logo & Name of Website */}
         <button
@@ -60,15 +65,26 @@ export const Header: React.FC<HeaderProps> = ({
           </span>
         </button>
 
-        {/* Right Controls: History icon, Language icon, Appearance icon ONLY */}
+        {/* Right Controls: Settings, History, Language, Appearance */}
         <div className="flex items-center gap-2 sm:gap-2.5">
+          {/* Settings Icon: view and edit the system instruction */}
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className={iconButtonClassName}
+            title={t.settings}
+            aria-label={t.settings}
+          >
+            <Settings className="w-4 h-4" />
+          </button>
+
           {/* History Icon */}
           <button
             type="button"
             onClick={onOpenLibrary}
-            className="relative p-2 rounded-xl text-zinc-700 dark:text-zinc-300 hover:text-purple-600 dark:hover:text-purple-400 bg-white/60 dark:bg-zinc-900/60 backdrop-blur-md hover:bg-white/90 dark:hover:bg-zinc-800/80 border border-white/80 dark:border-white/10 shadow-2xs transition-all duration-150 cursor-pointer"
+            className={iconButtonClassName}
             title={t.library || 'History'}
-            aria-label="History"
+            aria-label={t.library || 'History'}
           >
             <History className="w-4 h-4" />
             {savedCount > 0 && (
@@ -94,7 +110,7 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             type="button"
             onClick={onToggleTheme}
-            className="p-2 rounded-xl text-zinc-700 dark:text-zinc-300 hover:text-purple-600 dark:hover:text-purple-400 bg-white/60 dark:bg-zinc-900/60 backdrop-blur-md hover:bg-white/90 dark:hover:bg-zinc-800/80 border border-white/80 dark:border-white/10 shadow-2xs transition-all duration-150 cursor-pointer"
+            className={iconButtonClassName}
             title={theme === 'dark' ? t.themeLight || 'Light Mode' : t.themeDark || 'Dark Mode'}
             aria-label="Appearance"
           >

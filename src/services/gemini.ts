@@ -1,14 +1,21 @@
 import {
   DomainType,
   DepthType,
+  OutputLanguage,
   GeminiModelInfo,
   GenerationErrorDetails,
 } from '../types';
 import {
   DOMAINS,
   DEPTHS,
+  OUTPUT_LANGUAGES,
   EXACT_SYSTEM_INSTRUCTION,
 } from '../constants';
+
+/**
+ * All Gemini calls go through this app's own server (server.ts), which holds
+ * the only API key (GEMINI_API_KEY). The browser never talks to Google directly.
+ */
 
 export class GeminiApiError extends Error {
   details: GenerationErrorDetails;
@@ -21,27 +28,33 @@ export class GeminiApiError extends Error {
 }
 
 /**
- * Builds the effective system instruction:
- * Base instruction (or user-customized from settings)
- * + exactly one line for domain
- * + exactly one line for depth
- * + optional exclusions appended under rules
+ * Builds the system instruction that is actually sent:
+ * base instruction (or the version edited in Settings)
+ * + one line for the domain
+ * + one line for the depth
+ * + one line for the output language (none for "match my request")
+ * + the exclusions, if any
  */
 export function buildSystemInstruction(params: {
   baseInstruction: string;
   domain: DomainType;
   depth: DepthType;
+  outputLanguage: OutputLanguage;
   exclusions?: string;
 }): string {
-  const { baseInstruction, domain, depth, exclusions } = params;
+  const { baseInstruction, domain, depth, outputLanguage, exclusions } = params;
 
   const domainOption = DOMAINS.find((d) => d.id === domain) || DOMAINS[0];
   const depthOption = DEPTHS.find((d) => d.id === depth) || DEPTHS[1];
+  const languageOption = OUTPUT_LANGUAGES.find((l) => l.id === outputLanguage);
 
   let instruction = baseInstruction.trim();
 
-  // Append one line for domain and one line for depth
   instruction += `\n\n${domainOption.instructionLine}\n${depthOption.instructionLine}`;
+
+  if (languageOption?.instructionLine) {
+    instruction += `\n${languageOption.instructionLine}`;
+  }
 
   if (exclusions && exclusions.trim()) {
     instruction += `\nUser explicitly specified the following exclusions (append as negative lines under # OUTPUT RULES):\n${exclusions.trim()}`;
@@ -51,27 +64,36 @@ export function buildSystemInstruction(params: {
 }
 
 /**
- * Strips markdown code fences (e.g. ```markdown ... ``` or ``` ...) from the model's reply
+ * Strips the outer markdown code fence (e.g. ```markdown ... ```) from the model's reply.
+ * Fences inside the prompt itself are left alone.
  */
 export function stripMarkdownFences(text: string): string {
   if (!text) return '';
   let cleaned = text.trim();
 
-  // If wrapped in ```...``` or ```markdown ... ```
   if (cleaned.startsWith('```')) {
-    // Remove opening fence and optional language tag (e.g., ```markdown or ```text)
     cleaned = cleaned.replace(/^```[a-zA-Z0-9_-]*\s*\n?/, '');
-    // Remove closing fence
     cleaned = cleaned.replace(/\n?```\s*$/, '');
   }
 
   return cleaned.trim();
 }
 
+/** Parses Google's RetryInfo.retryDelay, e.g. "55s" -> 55. */
+function parseRetryDelay(value: unknown): number | undefined {
+  if (typeof value !== 'string') return undefined;
+  const match = value.match(/^(\d+(?:\.\d+)?)s$/);
+  return match ? Math.ceil(Number(match[1])) : undefined;
+}
+
 /**
- * Parses Google Gemini error payloads.
- * Crucial: Shows the actual error message and HTTP status code returned by Google.
- * On 429: Identifies whether it was a per-minute rate limit or daily quota.
+ * Reads Google's error body ({ error: { code, message, status, details } }) as
+ * relayed by server.ts, keeping Google's own message and HTTP status.
+ *
+ * For 429 it reads the QuotaFailure violations: quotaIds such as
+ * "GenerateRequestsPerMinutePerProjectPerModel-FreeTier" or
+ * "GenerateRequestsPerDayPerProjectPerModel-FreeTier" tell a per-minute limit
+ * from a daily quota. RetryInfo.retryDelay says how long Google wants us to wait.
  */
 export function parseGeminiError(statusCode: number, errorData: any): GenerationErrorDetails {
   const errObj = errorData?.error || {};
@@ -79,183 +101,143 @@ export function parseGeminiError(statusCode: number, errorData: any): Generation
     errObj.message ||
     errorData?.message ||
     (typeof errorData === 'string' ? errorData : `HTTP ${statusCode}: Error from Google API`);
-  const statusStr = (errObj.status || '').toString().toLowerCase();
-  const detailsStr = JSON.stringify(errObj.details || '').toLowerCase();
-  const combined = `${rawMessage.toLowerCase()} ${statusStr} ${detailsStr}`;
+  const googleDetails: any[] = Array.isArray(errObj.details) ? errObj.details : [];
+  const typeOf = (detail: any) => String(detail?.['@type'] || '');
 
-  let isRateLimitMinute = false;
-  let isDailyQuotaExhausted = false;
-  let isInvalidKey = false;
-  let userGuidance: string | undefined = undefined;
-
-  if (statusCode === 400) {
-    if (
-      combined.includes('api key not valid') ||
-      combined.includes('invalid argument') ||
-      combined.includes('api_key_invalid') ||
-      combined.includes('key not valid')
-    ) {
-      isInvalidKey = true;
-      userGuidance =
-        'مفتاح Gemini API غير صالح (صيغة خاطئة). تأكد من نسخ المفتاح كاملاً من Google AI Studio.';
-    }
-  } else if (statusCode === 401 || statusCode === 403) {
-    isInvalidKey = true;
-    userGuidance =
-      'المفتاح غير مصرح به أو تم إلغاؤه (Unauthorized / Forbidden). يرجى التأكد من صلاحية المفتاح.';
-  } else if (statusCode === 429 || statusStr.includes('resource_exhausted')) {
-    if (
-      combined.includes('day') ||
-      combined.includes('daily') ||
-      combined.includes('per_day') ||
-      combined.includes('per-day') ||
-      combined.includes('quota') ||
-      combined.includes('free tier')
-    ) {
-      isDailyQuotaExhausted = true;
-      userGuidance =
-        'تم استنفاد الحصة اليومية المتاحة لهذا المفتاح (Daily Quota Exhausted). يرجى استخدام مفتاح آخر أو الانتظار لليوم التالي.';
-    } else {
-      isRateLimitMinute = true;
-      userGuidance =
-        'تم تجاوز معدل الطلبات المسموح به في الدقيقة (Per-Minute Rate Limit). جاري إعادة المحاولة تلقائياً بعد مهلة تصاعدية.';
-    }
-  }
-
-  return {
+  const result: GenerationErrorDetails = {
     statusCode,
     statusText: errObj.status || `HTTP ${statusCode}`,
     rawMessage,
-    userGuidance,
-    isInvalidKey,
-    isRateLimitMinute,
-    isDailyQuotaExhausted,
+    finishReason: errObj.finishReason,
   };
+
+  if (statusCode === 429) {
+    const quotaIds = googleDetails
+      .filter((d) => typeOf(d).endsWith('google.rpc.QuotaFailure'))
+      .flatMap((d) => (Array.isArray(d.violations) ? d.violations : []))
+      .map((v: any) => String(v?.quotaId || ''));
+    const retryInfo = googleDetails.find((d) => typeOf(d).endsWith('google.rpc.RetryInfo'));
+    result.retryDelaySeconds = parseRetryDelay(retryInfo?.retryDelay);
+
+    // One 429 can list several violations. A daily one means retrying today will not help.
+    if (quotaIds.some((id) => id.includes('PerDay'))) {
+      result.isDailyQuotaExhausted = true;
+      result.userGuidance =
+        'انتهت الحصة اليومية لمفتاح السيرفر. الحصة بتتجدد تلقائيًا، أو فعّل الفوترة في Google AI Studio.';
+    } else if (quotaIds.some((id) => id.includes('PerMinute'))) {
+      result.isRateLimitMinute = true;
+      result.userGuidance = 'تم تجاوز عدد الطلبات المسموح في الدقيقة. أعد المحاولة بعد لحظات.';
+    } else {
+      result.userGuidance = 'Google لم يحدد نوع الحد الذي تم تجاوزه في هذا الرد.';
+    }
+  } else if (statusCode === 400) {
+    const lowered = `${rawMessage} ${JSON.stringify(googleDetails)}`.toLowerCase();
+    if (lowered.includes('api key not valid') || lowered.includes('api_key_invalid')) {
+      result.isInvalidKey = true;
+      result.userGuidance =
+        'مفتاح GEMINI_API_KEY على السيرفر غير صالح. عدّله من Secrets في AI Studio (أو من .env.local محليًا).';
+    }
+  } else if (statusCode === 401 || statusCode === 403) {
+    result.isInvalidKey = true;
+    result.userGuidance =
+      'Google رفض مفتاح السيرفر أو لا يسمح له بهذا النموذج. راجع GEMINI_API_KEY في Secrets أو اختر نموذجًا آخر.';
+  }
+
+  if (result.finishReason === 'SAFETY') {
+    result.userGuidance = 'فلاتر الأمان في Gemini حجبت الرد. عدّل صياغة الطلب.';
+  } else if (result.finishReason === 'MAX_TOKENS') {
+    result.userGuidance = 'الرد وصل للحد الأقصى من الرموز. قصّر الطلب أو اختر مستوى تفصيل أقل.';
+  } else if (result.finishReason === 'RECITATION') {
+    result.userGuidance = 'تم إيقاف الرد لتجنب تكرار نصوص محمية بحقوق النشر.';
+  }
+
+  return result;
 }
 
-/**
- * Fetches models dynamically.
- * First queries /api/models which uses either the user's custom key (x-api-key)
- * or the server's configured GEMINI_API_KEY.
- * Never hardcodes model names.
- */
-export async function fetchGeminiModels(apiKey?: string): Promise<GeminiModelInfo[]> {
-  const cleanKey = (apiKey || '').trim();
-
-  // 1. Try server endpoint first (works both with custom key or server key)
+async function postJson(url: string, body: unknown): Promise<{ res: Response; data: any }> {
+  let res: Response;
   try {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      ...(cleanKey ? { 'x-api-key': cleanKey } : {}),
-    };
-
-    const res = await fetch('/api/models', { method: 'GET', headers });
-    const data = await res.json().catch(() => null);
-
-    if (res.ok && data?.models && Array.isArray(data.models) && data.models.length > 0) {
-      return data.models;
-    }
-
-    // If server returned an explicit error and we had no custom key, parse it
-    if (!res.ok && data?.error) {
-      const parsed = parseGeminiError(res.status, data);
-      throw new GeminiApiError(parsed);
-    }
-  } catch (err: any) {
-    if (err instanceof GeminiApiError) throw err;
-    // Otherwise fallback if cleanKey is present
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (networkErr: any) {
+    throw new GeminiApiError({
+      statusCode: 0,
+      rawMessage: `خطأ اتصال: ${networkErr?.message || 'تعذر الاتصال بالخادم'}`,
+    });
   }
+  const data = await res.json().catch(() => null);
+  return { res, data };
+}
 
-  // 2. Direct Google fallback if a clean user key was provided
-  if (cleanKey) {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(
-      cleanKey
-    )}`;
-
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': cleanKey,
-      ...(cleanKey.startsWith('AQ.') ? { Authorization: `Bearer ${cleanKey}` } : {}),
-    };
-
-    let res: Response;
-    try {
-      res = await fetch(endpoint, { method: 'GET', headers });
-    } catch (networkErr: any) {
-      throw new GeminiApiError({
-        statusCode: 0,
-        rawMessage: `فشل الاتصال بالشبكة: ${networkErr?.message || 'تعذر الوصول إلى سيرفر Google'}`,
-      });
-    }
-
-    const data = await res.json().catch(() => null);
-
-    if (!res.ok) {
-      const parsed = parseGeminiError(res.status, data);
-      throw new GeminiApiError(parsed);
-    }
-
-    if (!data?.models || !Array.isArray(data.models)) {
-      throw new GeminiApiError({
-        statusCode: res.status,
-        rawMessage: `HTTP ${res.status}: لم يتم العثور على قائمة نماذج في استجابة Google.`,
-      });
-    }
-
-    const eligibleModels: GeminiModelInfo[] = data.models
-      .filter((m: any) => {
-        const methods: string[] = m.supportedGenerationMethods || [];
-        return methods.includes('generateContent');
-      })
-      .map((m: any) => {
-        const rawName: string = m.name || '';
-        const cleanId = rawName.replace(/^models\//, '');
-        return {
-          id: cleanId,
-          name: rawName,
-          displayName: m.displayName || cleanId,
-          description: m.description,
-          supportedGenerationMethods: m.supportedGenerationMethods,
-        };
-      });
-
-    if (eligibleModels.length > 0) {
-      return eligibleModels;
-    }
+function requireModel(model: string) {
+  if (!model || !model.trim()) {
+    throw new GeminiApiError({
+      statusCode: 400,
+      rawMessage: 'لم يتم اختيار نموذج. اضغط "تحديث" بجانب قائمة النماذج ثم اختر نموذجًا.',
+    });
   }
-
-  throw new GeminiApiError({
-    statusCode: 400,
-    rawMessage: 'تعذر جلب النماذج. تأكد من اتصال الإنترنت أو مفتاح API.',
-  });
 }
 
 /**
- * Calls Gemini generateContent with user text and system instruction strictly separated.
- * Routes through the server /api/generate endpoint (supporting both server GEMINI_API_KEY
- * and optional user x-api-key).
- * 1) SEPARATE THE TWO PARTS:
- *    system_instruction and user contents are strictly segregated.
- * 2) Temperature fixed at 0.3
- * 3) On 429: Retries with backoff at 1s, 2s, 4s, showing whether per-minute or daily quota
- * 4) Strips markdown fences before returning
+ * Fetches the models available to the server key. Model names are never hardcoded.
+ */
+export async function fetchGeminiModels(): Promise<GeminiModelInfo[]> {
+  let res: Response;
+  try {
+    res = await fetch('/api/models');
+  } catch (networkErr: any) {
+    throw new GeminiApiError({
+      statusCode: 0,
+      rawMessage: `تعذر الاتصال بالسيرفر: ${networkErr?.message || 'خطأ شبكة'}`,
+    });
+  }
+
+  const data = await res.json().catch(() => null);
+
+  if (!res.ok) {
+    throw new GeminiApiError(parseGeminiError(res.status, data));
+  }
+
+  const models: GeminiModelInfo[] = Array.isArray(data?.models) ? data.models : [];
+  if (models.length === 0) {
+    throw new GeminiApiError({
+      statusCode: res.status,
+      rawMessage: 'لم يرجع Google أي نموذج يدعم generateContent لهذا المفتاح.',
+    });
+  }
+
+  return models;
+}
+
+const BACKOFF_DELAYS_MS = [1000, 2000, 4000];
+// If Google asks for a longer wait than this, stop retrying and show the error.
+const MAX_RETRY_WAIT_MS = 60_000;
+
+/**
+ * Sends the request to /api/generate, where the system instruction and the
+ * user's text go to Gemini as separate fields.
+ * On 429: retries after 1s, 2s, 4s — or after Google's retryDelay when it is
+ * longer — but never retries a daily quota.
  */
 export async function generateStructuredPrompt(params: {
-  apiKey?: string;
   model: string;
   rawText: string;
   domain: DomainType;
   depth: DepthType;
+  outputLanguage: OutputLanguage;
   exclusions?: string;
   baseSystemInstruction?: string;
   onRetry?: (attempt: number, delaySeconds: number, isPerMinute: boolean) => void;
 }): Promise<string> {
   const {
-    apiKey,
     model,
     rawText,
     domain,
     depth,
+    outputLanguage,
     exclusions,
     baseSystemInstruction = EXACT_SYSTEM_INSTRUCTION,
     onRetry,
@@ -264,157 +246,77 @@ export async function generateStructuredPrompt(params: {
   if (!rawText || !rawText.trim()) {
     throw new GeminiApiError({
       statusCode: 400,
-      rawMessage: 'HTTP 400: يرجى كتابة فكرتك أو طلبك في مربع الإدخال.',
+      rawMessage: 'يرجى كتابة فكرتك أو طلبك في مربع الإدخال.',
     });
   }
+  requireModel(model);
 
-  const cleanKey = (apiKey || '').trim();
-  const effectiveSystemInstruction = buildSystemInstruction({
+  const systemInstruction = buildSystemInstruction({
     baseInstruction: baseSystemInstruction,
     domain,
     depth,
+    outputLanguage,
     exclusions,
   });
 
-  const targetModel = model || 'gemini-3.6-flash';
-
-  const backoffDelays = [1000, 2000, 4000]; // 1s, 2s, 4s
-
-  for (let attempt = 0; attempt <= backoffDelays.length; attempt++) {
-    try {
-      const res = await fetch('/api/generate', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(cleanKey ? { 'x-api-key': cleanKey } : {}),
-        },
-        body: JSON.stringify({
-          rawText: rawText.trim(),
-          exclusions: exclusions?.trim() || undefined,
-          domain,
-          depth,
-          model: targetModel,
-          systemInstruction: effectiveSystemInstruction,
-        }),
-      });
-
-      const responseData = await res.json().catch(() => null);
-
-      if (!res.ok) {
-        const parsed = parseGeminiError(res.status, responseData);
-
-        // On 429, retry with backoff at 1s, 2s, 4s
-        if (res.status === 429 && attempt < backoffDelays.length) {
-          const delayMs = backoffDelays[attempt];
-          if (onRetry) {
-            onRetry(
-              attempt + 1,
-              delayMs / 1000,
-              parsed.isRateLimitMinute || !parsed.isDailyQuotaExhausted
-            );
-          }
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
-          continue; // retry
-        }
-
-        throw new GeminiApiError(parsed);
-      }
-
-      const generatedText = (responseData?.result || '').trim();
-      if (!generatedText) {
-        const finishReason = responseData?.finishReason || 'EMPTY_RESPONSE';
-        let rawMessage = `استجابة فارغة من النموذج دون نص مخرجات (سبب الإنهاء: ${finishReason}).`;
-        let userGuidance = 'يرجى كتابة فكرة أو وصف مشروع واضح ومفصل لتتمكن خوارزمية التوليد من تحويله إلى هيكل برومبت متكامل.';
-
-        if (finishReason === 'SAFETY') {
-          rawMessage = 'تم حجب المخرجات بواسطة فلاتر الأمان التابعة لـ Gemini (Safety Filter).';
-          userGuidance = 'يرجى تعديل الصياغة وتجنب استخدام أي كلمات قد تصنف كحساسة أو غير ملائمة.';
-        } else if (finishReason === 'MAX_TOKENS') {
-          rawMessage = 'تم استهلاك الحد الأقصى المسموح للرموز (Max Tokens).';
-          userGuidance = 'يرجى تقصير المدخلات أو اختيار درجة عمق أقل.';
-        } else if (finishReason === 'RECITATION') {
-          rawMessage = 'تم إيقاف المخرجات لتجنب تكرار نصوص محمية بحقوق الطبع والنشر.';
-        }
-
-        throw new GeminiApiError({
-          statusCode: res.status,
-          rawMessage,
-          userGuidance,
-          finishReason,
-        });
-      }
-
-      // Strip any markdown code fences before returning
-      return stripMarkdownFences(generatedText);
-    } catch (err: any) {
-      if (err instanceof GeminiApiError) {
-        if (err.details.statusCode !== 429 || attempt >= backoffDelays.length) {
-          throw err;
-        }
-      } else {
-        throw new GeminiApiError({
-          statusCode: 0,
-          rawMessage: `خطأ اتصال: ${err?.message || 'تعذر الاتصال بالخادم'}`,
-        });
-      }
-    }
-  }
-
-  throw new GeminiApiError({
-    statusCode: 429,
-    rawMessage: 'HTTP 429: فشل الطلب بعد استنفاد محاولات إعادة المحاولة (1s, 2s, 4s).',
-    isRateLimitMinute: true,
-  });
-}
-
-/**
- * Sends current raw input to Gemini to refine phrasing and improve accuracy & clarity
- * before final structured prompt transformation.
- */
-export async function refinePromptText(params: {
-  rawText: string;
-  domain?: DomainType;
-  model?: string;
-  apiKey?: string;
-}): Promise<string> {
-  const { rawText, domain, model, apiKey } = params;
-  const cleanKey = (apiKey || '').trim();
-
-  try {
-    const res = await fetch('/api/refine', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(cleanKey ? { 'x-api-key': cleanKey } : {}),
-      },
-      body: JSON.stringify({
-        rawText: rawText.trim(),
-        domain,
-        model: model || 'gemini-3.6-flash',
-      }),
+  for (let attempt = 0; ; attempt++) {
+    const { res, data } = await postJson('/api/generate', {
+      rawText: rawText.trim(),
+      model,
+      systemInstruction,
     });
 
-    const data = await res.json().catch(() => null);
+    if (res.ok) {
+      const text = stripMarkdownFences(String(data?.result || ''));
+      if (!text) {
+        throw new GeminiApiError({
+          statusCode: res.status,
+          rawMessage: 'وصل رد فارغ من السيرفر.',
+          finishReason: 'EMPTY_RESPONSE',
+        });
+      }
+      return text;
+    }
 
-    if (!res.ok) {
-      const parsed = parseGeminiError(res.status, data);
+    const parsed = parseGeminiError(res.status, data);
+    const canRetry =
+      res.status === 429 && !parsed.isDailyQuotaExhausted && attempt < BACKOFF_DELAYS_MS.length;
+    if (!canRetry) {
       throw new GeminiApiError(parsed);
     }
 
-    const result = data?.result || '';
-    if (!result.trim()) {
-      throw new GeminiApiError({
-        statusCode: 500,
-        rawMessage: 'لم يتم استلام نص محسن من النموذج.',
-      });
+    const waitMs = Math.max(BACKOFF_DELAYS_MS[attempt], (parsed.retryDelaySeconds ?? 0) * 1000);
+    if (waitMs > MAX_RETRY_WAIT_MS) {
+      throw new GeminiApiError(parsed);
     }
 
-    return result.trim();
-  } catch (err: any) {
-    if (err instanceof GeminiApiError) throw err;
+    onRetry?.(attempt + 1, Math.round(waitMs / 1000), parsed.isRateLimitMinute === true);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+}
+
+/**
+ * Asks Gemini (via /api/refine) to clarify the wording of the raw request
+ * without adding requirements, before it is formatted.
+ */
+export async function refinePromptText(params: { rawText: string; model: string }): Promise<string> {
+  const { rawText, model } = params;
+  requireModel(model);
+
+  const { res, data } = await postJson('/api/refine', { rawText: rawText.trim(), model });
+
+  if (!res.ok) {
+    throw new GeminiApiError(parseGeminiError(res.status, data));
+  }
+
+  const result = String(data?.result || '').trim();
+  if (!result) {
     throw new GeminiApiError({
-      statusCode: 0,
-      rawMessage: `فشل تحسين البرومبت: ${err?.message || 'تعذر الاتصال بالخادم'}`,
+      statusCode: res.status,
+      rawMessage: 'لم يتم استلام نص محسن من النموذج.',
+      finishReason: 'EMPTY_RESPONSE',
     });
   }
+
+  return result;
 }

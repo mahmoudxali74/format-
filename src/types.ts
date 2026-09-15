@@ -12,8 +12,8 @@ export type DomainType =
 export type DepthType = 'short' | 'medium' | 'detailed' | 'ultra';
 
 export interface GeminiModelInfo {
-  id: string; // e.g. "gemini-2.5-flash"
-  name: string; // e.g. "models/gemini-2.5-flash"
+  id: string; // model id returned by models.list, without the "models/" prefix
+  name: string; // full resource name, e.g. "models/<id>"
   displayName: string;
   description?: string;
   supportedGenerationMethods?: string[];
@@ -25,6 +25,7 @@ export interface SavedPromptItem {
   exclusions?: string;
   domain: DomainType;
   depth: DepthType;
+  outputLanguage?: OutputLanguage;
   model: string;
   output: string;
   timestamp: number;
@@ -38,6 +39,7 @@ export interface GenerationErrorDetails {
   isInvalidKey?: boolean;
   isRateLimitMinute?: boolean;
   isDailyQuotaExhausted?: boolean;
+  retryDelaySeconds?: number;
   finishReason?: string;
   retryAttempt?: number;
   retryCountdown?: number;
