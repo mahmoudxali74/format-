@@ -23,6 +23,8 @@ import { Footer } from './components/Footer';
 import { LibraryDrawer } from './components/LibraryDrawer';
 import { ErrorBanner } from './components/ErrorBanner';
 import { SettingsModal } from './components/SettingsModal';
+import { CharactersSection } from './components/CharactersSection';
+import { Mascot } from './components/Mascot';
 import { Clock } from 'lucide-react';
 
 const STORAGE_KEYS = {
@@ -127,6 +129,12 @@ export default function App() {
   // Modals & Drawers state
   const [isLibraryOpen, setIsLibraryOpen] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+
+  // Character animations loop forever, so they can be paused (WCAG 2.2.2).
+  // They start paused when the device asks for reduced motion.
+  const [charactersPaused, setCharactersPaused] = useState<boolean>(
+    () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
 
   // Saved library state
   const [savedItems, setSavedItems] = useState<SavedPromptItem[]>(() => {
@@ -361,7 +369,9 @@ export default function App() {
 
   return (
     <div
-      className="min-h-screen flex flex-col bg-[#FAFAFC] dark:bg-[#070709] text-zinc-900 dark:text-zinc-100 font-sans transition-colors duration-200"
+      className={`min-h-screen flex flex-col bg-[#FAFAFC] dark:bg-[#070709] text-zinc-900 dark:text-zinc-100 font-sans transition-colors duration-200 ${
+        charactersPaused ? 'pz-characters-paused' : ''
+      }`}
       dir={lang === 'ar' ? 'rtl' : 'ltr'}
     >
       {/* Top Header - PromptForge brand header with navigation & logo */}
@@ -383,6 +393,9 @@ export default function App() {
         onScrollToBuilder={scrollToBuilder}
         onOpenLibrary={() => setIsLibraryOpen(true)}
       >
+        {/* The four PromptZ characters, animated */}
+        <CharactersSection lang={lang} />
+
         <main
           ref={builderRef}
           id="prompt-builder"
@@ -485,6 +498,13 @@ export default function App() {
         depth={depth}
         outputLanguage={outputLanguage}
         exclusions={exclusions}
+        lang={lang}
+      />
+
+      {/* Main character: hops and travels across the page while scrolling */}
+      <Mascot
+        paused={charactersPaused}
+        onTogglePaused={() => setCharactersPaused((prev) => !prev)}
         lang={lang}
       />
     </div>
